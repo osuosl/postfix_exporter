@@ -76,6 +76,8 @@ type PostfixExporter struct {
 	smtpStatusDeferred              prometheus.Counter
 	opendkimSignatureAdded          *prometheus.CounterVec
 	amavisProcesses                 *prometheus.CounterVec
+    sqlgreyGrey                     *prometheus.CounterVec
+    sqlgreySpam                     prometheus.Counter
 }
 
 // CollectShowqFromReader parses the output of Postfix's 'showq' command
@@ -284,7 +286,7 @@ func CollectShowqFromSocket(path string, ch chan<- prometheus.Metric) error {
 
 // Patterns for parsing log messages.
 var (
-	logLine                             = regexp.MustCompile(` ?(postfix|opendkim|amavis)(/(\w+))?\[\d+\]: (.*)`)
+	logLine                             = regexp.MustCompile(` ?(postfix|opendkim|amavis|sqlgrey)(/(\w+))?\[\d+\]: (.*)`)
 	lmtpPipeSMTPLine                    = regexp.MustCompile(`, relay=(\S+), .*, delays=([0-9\.]+)/([0-9\.]+)/([0-9\.]+)/([0-9\.]+), `)
 	qmgrInsertLine                      = regexp.MustCompile(`:.*, size=(\d+), nrcpt=(\d+) `)
 	qmgrRejectsLine                     = regexp.MustCompile(`:.*, dsn=(\d+\.\d+\.\d+),`)
@@ -302,6 +304,7 @@ var (
 	smtpdTLSLine                        = regexp.MustCompile(`^(\S+) TLS connection established from \S+: (\S+) with cipher (\S+) \((\d+)/(\d+) bits\)`)
 	opendkimSignatureAdded              = regexp.MustCompile(`^[\w\d]+: DKIM-Signature field added \(s=(\w+), d=(.*)\)$`)
 	amavisLine                          = regexp.MustCompile(`(Passed|Blocked) (CLEAN|SPAM|SPAMMY|BANNED|BAD-HEADER|INFECTED)`)
+    sqlgreyLine                         = regexp.MustCompile(`grey: (.*): `)
 )
 
 // CollectFromLogline collects metrict from a Postfix log line.
@@ -433,6 +436,16 @@ func (e *PostfixExporter) CollectFromLogLine(line string) {
 		} else {
 			e.addToUnsupportedLine(line, process)
 		}
+	case "sqlgrey":
+        if sqlgreyMatches := sqlgreyLine.FindStringSubmatch(remainder); sqlgreyMatches != nil {
+            e.sqlgreyGrey.WithLabelValues(sqlgreyMatches[1]).Inc()
+        } else if strings.Contains(remainder, "spam: ") {
+            e.sqlgreySpam.Inc()
+        } else if strings.Contains(remainder, "perf: ") {
+            // noop
+        } else {
+            e.addToUnsupportedLine(line, process)
+        }
 	default:
 		// Unknown log entry format.
 		e.addToUnsupportedLine(line, "")
@@ -681,6 +694,19 @@ func NewPostfixExporter(showqPath string, logfilePath string, journal *Journal, 
 			},
 			[]string{"state", "status"},
 		),
+		sqlgreyGrey: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "sqlgrey",
+                Name:      "grey",
+                Help:      "Total number of messages passed as grey",
+			},
+			[]string{"type"},
+		),
+		sqlgreySpam: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "sqlgrey",
+			Name:      "spam",
+			Help:      "Total number of messages passed as spam",
+		}),
 	}, nil
 }
 
@@ -720,6 +746,8 @@ func (e *PostfixExporter) Describe(ch chan<- *prometheus.Desc) {
 	e.smtpConnectionRefused.Describe(ch)
 	e.opendkimSignatureAdded.Describe(ch)
 	e.amavisProcesses.Describe(ch)
+	e.sqlgreyGrey.Describe(ch)
+	ch <- e.sqlgreySpam.Desc()
 }
 
 func (e *PostfixExporter) foreverCollectFromJournal(ctx context.Context) {
@@ -814,4 +842,6 @@ func (e *PostfixExporter) Collect(ch chan<- prometheus.Metric) {
 	ch <- e.smtpConnectionRefused
 	e.opendkimSignatureAdded.Collect(ch)
 	e.amavisProcesses.Collect(ch)
+	e.sqlgreyGrey.Collect(ch)
+	ch <- e.sqlgreySpam
 }
