@@ -50,6 +50,7 @@ type PostfixExporter struct {
 	cleanupProcesses                prometheus.Counter
 	cleanupRejects                  prometheus.Counter
 	cleanupNotAccepted              prometheus.Counter
+    bounceProcesses                 prometheus.Counter
 	lmtpDelays                      *prometheus.HistogramVec
 	pipeDelays                      *prometheus.HistogramVec
 	qmgrInsertsNrcpt                prometheus.Histogram
@@ -322,6 +323,12 @@ func (e *PostfixExporter) CollectFromLogLine(line string) {
 		switch subprocess {
 		case "anvil":
             // noop
+		case "bounce":
+			if strings.Contains(remainder, ": sender non-delivery notification:") {
+                e.bounceProcesses.Inc()
+			} else {
+				e.addToUnsupportedLine(line, subprocess)
+			}
 		case "cleanup":
 			if strings.Contains(remainder, ": message-id=<") {
 				e.cleanupProcesses.Inc()
@@ -509,6 +516,11 @@ func NewPostfixExporter(showqPath string, logfilePath string, journal *Journal, 
 			Name:      "cleanup_messages_not_accepted_total",
 			Help:      "Total number of messages not accepted by cleanup.",
 		}),
+		bounceProcesses: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "bounce_messages_total",
+			Help:      "Total number of messages processed by bounce.",
+		}),
 		lmtpDelays: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: "postfix",
@@ -678,6 +690,7 @@ func (e *PostfixExporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.cleanupProcesses.Desc()
 	ch <- e.cleanupRejects.Desc()
 	ch <- e.cleanupNotAccepted.Desc()
+	ch <- e.bounceProcesses.Desc()
 	e.lmtpDelays.Describe(ch)
 	e.pipeDelays.Describe(ch)
 	ch <- e.qmgrInsertsNrcpt.Desc()
@@ -771,6 +784,7 @@ func (e *PostfixExporter) Collect(ch chan<- prometheus.Metric) {
 	ch <- e.cleanupProcesses
 	ch <- e.cleanupRejects
 	ch <- e.cleanupNotAccepted
+	ch <- e.bounceProcesses
 	e.lmtpDelays.Collect(ch)
 	e.pipeDelays.Collect(ch)
 	ch <- e.qmgrInsertsNrcpt
