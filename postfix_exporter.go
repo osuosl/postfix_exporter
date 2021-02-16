@@ -55,6 +55,7 @@ type PostfixExporter struct {
 	qmgrInsertsNrcpt                prometheus.Histogram
 	qmgrInsertsSize                 prometheus.Histogram
 	qmgrRemoves                     prometheus.Counter
+	pickupProcesses                     prometheus.Counter
 	smtpDelays                      *prometheus.HistogramVec
 	smtpTLSConnects                 *prometheus.CounterVec
 	smtpConnectionTimedOut          prometheus.Counter
@@ -282,6 +283,7 @@ var (
 	logLine                             = regexp.MustCompile(` ?(postfix|opendkim)(/(\w+))?\[\d+\]: (.*)`)
 	lmtpPipeSMTPLine                    = regexp.MustCompile(`, relay=(\S+), .*, delays=([0-9\.]+)/([0-9\.]+)/([0-9\.]+)/([0-9\.]+), `)
 	qmgrInsertLine                      = regexp.MustCompile(`:.*, size=(\d+), nrcpt=(\d+) `)
+	pickupLine                          = regexp.MustCompile(`: uid=(\S+) from=<(\S+)>`)
 	smtpStatusDeferredLine              = regexp.MustCompile(`, status=deferred`)
 	smtpTLSLine                         = regexp.MustCompile(`^(\S+) TLS connection established to \S+: (\S+) with cipher (\S+) \((\d+)/(\d+) bits\)`)
 	smtpConnectionTimedOut              = regexp.MustCompile(`^connect\s+to\s+(.*)\[(.*)\]:(\d+):\s+(Connection timed out)$`)
@@ -344,6 +346,12 @@ func (e *PostfixExporter) CollectFromLogLine(line string) {
 				addToHistogram(e.qmgrInsertsNrcpt, qmgrInsertMatches[2], "QMGR nrcpt")
 			} else if strings.HasSuffix(remainder, ": removed") {
 				e.qmgrRemoves.Inc()
+			} else {
+				e.addToUnsupportedLine(line, subprocess)
+			}
+		case "pickup":
+			if pickupMatches := pickupLine.FindStringSubmatch(remainder); pickupMatches != nil {
+				e.pickupProcesses.Inc()
 			} else {
 				e.addToUnsupportedLine(line, subprocess)
 			}
@@ -516,6 +524,11 @@ func NewPostfixExporter(showqPath string, logfilePath string, journal *Journal, 
 			Name:      "qmgr_messages_removed_total",
 			Help:      "Total number of messages removed from mail queues.",
 		}),
+		pickupProcesses: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "pickup_messages_procssed_total",
+			Help:      "Total number of messages sent through postfix pickup.",
+		}),
 		smtpDelays: prometheus.NewHistogramVec(
 			prometheus.HistogramOpts{
 				Namespace: "postfix",
@@ -632,6 +645,7 @@ func (e *PostfixExporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.qmgrInsertsNrcpt.Desc()
 	ch <- e.qmgrInsertsSize.Desc()
 	ch <- e.qmgrRemoves.Desc()
+	ch <- e.pickupProcesses.Desc()
 	e.smtpDelays.Describe(ch)
 	e.smtpTLSConnects.Describe(ch)
 	ch <- e.smtpDeferreds.Desc()
@@ -721,6 +735,7 @@ func (e *PostfixExporter) Collect(ch chan<- prometheus.Metric) {
 	ch <- e.qmgrInsertsNrcpt
 	ch <- e.qmgrInsertsSize
 	ch <- e.qmgrRemoves
+	ch <- e.pickupProcesses
 	e.smtpDelays.Collect(ch)
 	e.smtpTLSConnects.Collect(ch)
 	ch <- e.smtpDeferreds
