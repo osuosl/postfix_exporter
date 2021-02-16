@@ -323,6 +323,8 @@ func (e *PostfixExporter) CollectFromLogLine(line string) {
 		switch subprocess {
 		case "anvil":
             // noop
+		case "scache":
+            // noop
 		case "bounce":
 			if strings.Contains(remainder, ": sender non-delivery notification:") {
                 e.bounceProcesses.Inc()
