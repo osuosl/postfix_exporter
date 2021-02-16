@@ -54,6 +54,7 @@ type PostfixExporter struct {
 	pipeDelays                      *prometheus.HistogramVec
 	qmgrInsertsNrcpt                prometheus.Histogram
 	qmgrInsertsSize                 prometheus.Histogram
+    qmgrRejects                     *prometheus.CounterVec
 	qmgrRemoves                     prometheus.Counter
 	pickupProcesses                     prometheus.Counter
 	smtpDelays                      *prometheus.HistogramVec
@@ -72,6 +73,7 @@ type PostfixExporter struct {
 	unsupportedLogEntries           *prometheus.CounterVec
 	smtpStatusDeferred              prometheus.Counter
 	opendkimSignatureAdded          *prometheus.CounterVec
+	amavisProcesses                 *prometheus.CounterVec
 }
 
 // CollectShowqFromReader parses the output of Postfix's 'showq' command
@@ -280,9 +282,10 @@ func CollectShowqFromSocket(path string, ch chan<- prometheus.Metric) error {
 
 // Patterns for parsing log messages.
 var (
-	logLine                             = regexp.MustCompile(` ?(postfix|opendkim)(/(\w+))?\[\d+\]: (.*)`)
+	logLine                             = regexp.MustCompile(` ?(postfix|opendkim|amavis)(/(\w+))?\[\d+\]: (.*)`)
 	lmtpPipeSMTPLine                    = regexp.MustCompile(`, relay=(\S+), .*, delays=([0-9\.]+)/([0-9\.]+)/([0-9\.]+)/([0-9\.]+), `)
 	qmgrInsertLine                      = regexp.MustCompile(`:.*, size=(\d+), nrcpt=(\d+) `)
+	qmgrRejectsLine                     = regexp.MustCompile(`:.*, dsn=(\d+\.\d+\.\d+),`)
 	pickupLine                          = regexp.MustCompile(`: uid=(\S+) from=<(\S+)>`)
 	smtpStatusDeferredLine              = regexp.MustCompile(`, status=deferred`)
 	smtpTLSLine                         = regexp.MustCompile(`^(\S+) TLS connection established to \S+: (\S+) with cipher (\S+) \((\d+)/(\d+) bits\)`)
@@ -295,6 +298,7 @@ var (
 	smtpdSASLAuthenticationFailuresLine = regexp.MustCompile(`^warning: \S+: SASL \S+ authentication failed: `)
 	smtpdTLSLine                        = regexp.MustCompile(`^(\S+) TLS connection established from \S+: (\S+) with cipher (\S+) \((\d+)/(\d+) bits\)`)
 	opendkimSignatureAdded              = regexp.MustCompile(`^[\w\d]+: DKIM-Signature field added \(s=(\w+), d=(.*)\)$`)
+	amavisLine                          = regexp.MustCompile(`(Passed|Blocked) (CLEAN|SPAM|SPAMMY|BANNED|BAD-HEADER|INFECTED)`)
 )
 
 // CollectFromLogline collects metrict from a Postfix log line.
@@ -344,6 +348,8 @@ func (e *PostfixExporter) CollectFromLogLine(line string) {
 			if qmgrInsertMatches := qmgrInsertLine.FindStringSubmatch(remainder); qmgrInsertMatches != nil {
 				addToHistogram(e.qmgrInsertsSize, qmgrInsertMatches[1], "QMGR size")
 				addToHistogram(e.qmgrInsertsNrcpt, qmgrInsertMatches[2], "QMGR nrcpt")
+			} else if qmgrRejectMatches := qmgrRejectsLine.FindStringSubmatch(remainder); qmgrRejectMatches != nil {
+                e.qmgrRejects.WithLabelValues(qmgrRejectMatches[1]).Inc()
 			} else if strings.HasSuffix(remainder, ": removed") {
 				e.qmgrRemoves.Inc()
 			} else {
@@ -401,6 +407,12 @@ func (e *PostfixExporter) CollectFromLogLine(line string) {
 	case "opendkim":
 		if opendkimMatches := opendkimSignatureAdded.FindStringSubmatch(remainder); opendkimMatches != nil {
 			e.opendkimSignatureAdded.WithLabelValues(opendkimMatches[1], opendkimMatches[2]).Inc()
+		} else {
+			e.addToUnsupportedLine(line, process)
+		}
+	case "amavis":
+		if amavisMatches := amavisLine.FindStringSubmatch(remainder); amavisMatches != nil {
+			e.amavisProcesses.WithLabelValues(amavisMatches[1], amavisMatches[2]).Inc()
 		} else {
 			e.addToUnsupportedLine(line, process)
 		}
@@ -519,6 +531,13 @@ func NewPostfixExporter(showqPath string, logfilePath string, journal *Journal, 
 			Help:      "Size of messages inserted into the mail queues in bytes.",
 			Buckets:   []float64{1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9},
 		}),
+		qmgrRejects: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+				Name:      "qmgr_messages_rejected",
+				Help:      "Number of messages rejected in the mail queue.",
+			},
+			[]string{"dsn"}),
 		qmgrRemoves: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "postfix",
 			Name:      "qmgr_messages_removed_total",
@@ -627,6 +646,14 @@ func NewPostfixExporter(showqPath string, logfilePath string, journal *Journal, 
 			},
 			[]string{"subject", "domain"},
 		),
+		amavisProcesses: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "amavis",
+				Name:      "messages",
+				Help:      "Total number of messages passed through amavis.",
+			},
+			[]string{"state", "status"},
+		),
 	}, nil
 }
 
@@ -644,6 +671,7 @@ func (e *PostfixExporter) Describe(ch chan<- *prometheus.Desc) {
 	e.pipeDelays.Describe(ch)
 	ch <- e.qmgrInsertsNrcpt.Desc()
 	ch <- e.qmgrInsertsSize.Desc()
+	e.qmgrRejects.Describe(ch)
 	ch <- e.qmgrRemoves.Desc()
 	ch <- e.pickupProcesses.Desc()
 	e.smtpDelays.Describe(ch)
@@ -662,6 +690,7 @@ func (e *PostfixExporter) Describe(ch chan<- *prometheus.Desc) {
 	e.smtpConnectionTimedOut.Describe(ch)
 	e.smtpConnectionUnreachable.Describe(ch)
 	e.opendkimSignatureAdded.Describe(ch)
+	e.amavisProcesses.Describe(ch)
 }
 
 func (e *PostfixExporter) foreverCollectFromJournal(ctx context.Context) {
@@ -734,6 +763,7 @@ func (e *PostfixExporter) Collect(ch chan<- prometheus.Metric) {
 	e.pipeDelays.Collect(ch)
 	ch <- e.qmgrInsertsNrcpt
 	ch <- e.qmgrInsertsSize
+	e.qmgrRejects.Collect(ch)
 	ch <- e.qmgrRemoves
 	ch <- e.pickupProcesses
 	e.smtpDelays.Collect(ch)
@@ -752,4 +782,5 @@ func (e *PostfixExporter) Collect(ch chan<- prometheus.Metric) {
 	ch <- e.smtpConnectionTimedOut
 	ch <- e.smtpConnectionUnreachable
 	e.opendkimSignatureAdded.Collect(ch)
+	e.amavisProcesses.Collect(ch)
 }
