@@ -320,6 +320,8 @@ func (e *PostfixExporter) CollectFromLogLine(line string) {
 		// Group patterns to check by Postfix service.
 		subprocess := logMatches[3]
 		switch subprocess {
+		case "anvil":
+            // noop
 		case "cleanup":
 			if strings.Contains(remainder, ": message-id=<") {
 				e.cleanupProcesses.Inc()
