@@ -58,6 +58,7 @@ type PostfixExporter struct {
 	smtpDelays                      *prometheus.HistogramVec
 	smtpTLSConnects                 *prometheus.CounterVec
 	smtpConnectionTimedOut          prometheus.Counter
+	smtpConnectionUnreachable       prometheus.Counter
 	smtpDeferreds                   prometheus.Counter
 	smtpdConnects                   prometheus.Counter
 	smtpdDisconnects                prometheus.Counter
@@ -284,6 +285,7 @@ var (
 	smtpStatusDeferredLine              = regexp.MustCompile(`, status=deferred`)
 	smtpTLSLine                         = regexp.MustCompile(`^(\S+) TLS connection established to \S+: (\S+) with cipher (\S+) \((\d+)/(\d+) bits\)`)
 	smtpConnectionTimedOut              = regexp.MustCompile(`^connect\s+to\s+(.*)\[(.*)\]:(\d+):\s+(Connection timed out)$`)
+	smtpConnectionUnreachable           = regexp.MustCompile(`^connect\s+to\s+(.*)\[(.*)\]:(\d+):\s+(Network is unreachable)$`)
 	smtpdFCrDNSErrorsLine               = regexp.MustCompile(`^warning: hostname \S+ does not resolve to address `)
 	smtpdProcessesSASLLine              = regexp.MustCompile(`: client=.*, sasl_method=(\S+)`)
 	smtpdRejectsLine                    = regexp.MustCompile(`^NOQUEUE: reject: RCPT from \S+: ([0-9]+) `)
@@ -358,6 +360,8 @@ func (e *PostfixExporter) CollectFromLogLine(line string) {
 				e.smtpTLSConnects.WithLabelValues(smtpTLSMatches[1:]...).Inc()
 			} else if smtpMatches := smtpConnectionTimedOut.FindStringSubmatch(remainder); smtpMatches != nil {
 				e.smtpConnectionTimedOut.Inc()
+			} else if smtpMatches := smtpConnectionUnreachable.FindStringSubmatch(remainder); smtpMatches != nil {
+				e.smtpConnectionUnreachable.Inc()
 			} else {
 				e.addToUnsupportedLine(line, subprocess)
 			}
@@ -537,6 +541,11 @@ func NewPostfixExporter(showqPath string, logfilePath string, journal *Journal, 
 			Name:      "smtp_connection_timed_out_total",
 			Help:      "Total number of messages that have been deferred on SMTP.",
 		}),
+		smtpConnectionUnreachable: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "postfix",
+			Name:      "smtp_connection_unreachable_total",
+			Help:      "Total number of messages that have been unreachable on SMTP.",
+		}),
 		smtpdConnects: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "postfix",
 			Name:      "smtpd_connects_total",
@@ -637,6 +646,7 @@ func (e *PostfixExporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.smtpStatusDeferred.Desc()
 	e.unsupportedLogEntries.Describe(ch)
 	e.smtpConnectionTimedOut.Describe(ch)
+	e.smtpConnectionUnreachable.Describe(ch)
 	e.opendkimSignatureAdded.Describe(ch)
 }
 
@@ -725,5 +735,6 @@ func (e *PostfixExporter) Collect(ch chan<- prometheus.Metric) {
 	ch <- e.smtpStatusDeferred
 	e.unsupportedLogEntries.Collect(ch)
 	ch <- e.smtpConnectionTimedOut
+	ch <- e.smtpConnectionUnreachable
 	e.opendkimSignatureAdded.Collect(ch)
 }
