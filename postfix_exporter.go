@@ -70,6 +70,7 @@ type PostfixExporter struct {
 	smtpdLostConnections            *prometheus.CounterVec
 	smtpdProcesses                  *prometheus.CounterVec
 	smtpdRejects                    *prometheus.CounterVec
+    smtpdConnRateRejects            *prometheus.CounterVec
 	smtpdSASLAuthenticationFailures prometheus.Counter
 	smtpdTLSConnects                *prometheus.CounterVec
 	unsupportedLogEntries           *prometheus.CounterVec
@@ -299,6 +300,7 @@ var (
 	smtpdFCrDNSErrorsLine               = regexp.MustCompile(`^warning: hostname \S+ does not resolve to address `)
 	smtpdProcessesSASLLine              = regexp.MustCompile(`: client=.*, sasl_method=(\S+)`)
 	smtpdRejectsLine                    = regexp.MustCompile(`^NOQUEUE: reject: RCPT from \S+: ([0-9]+) `)
+    smtpdConnRateLine                   = regexp.MustCompile(`Connection rate limit exceeded:.* for service (\S+)`)
 	smtpdLostConnectionLine             = regexp.MustCompile(`^lost connection after (\w+) from `)
 	smtpdSASLAuthenticationFailuresLine = regexp.MustCompile(`^warning: \S+: SASL \S+ authentication failed: `)
 	smtpdTLSLine                        = regexp.MustCompile(`^(\S+) TLS connection established from \S+: (\S+) with cipher (\S+) \((\d+)/(\d+) bits\)`)
@@ -414,6 +416,9 @@ func (e *PostfixExporter) CollectFromLogLine(line string) {
 				e.smtpdProcesses.WithLabelValues("").Inc()
 			} else if smtpdRejectsMatches := smtpdRejectsLine.FindStringSubmatch(remainder); smtpdRejectsMatches != nil {
 				e.smtpdRejects.WithLabelValues(smtpdRejectsMatches[1]).Inc()
+			} else if smtpdConnRateMatches := smtpdConnRateLine.FindStringSubmatch(remainder); smtpdConnRateMatches != nil {
+                e.smtpdConnRateRejects.WithLabelValues(smtpdConnRateMatches[1]).Inc()
+
 			} else if smtpdSASLAuthenticationFailuresLine.MatchString(remainder) {
 				e.smtpdSASLAuthenticationFailures.Inc()
 			} else if smtpdTLSMatches := smtpdTLSLine.FindStringSubmatch(remainder); smtpdTLSMatches != nil {
@@ -654,6 +659,13 @@ func NewPostfixExporter(showqPath string, logfilePath string, journal *Journal, 
 				Help:      "Total number of NOQUEUE rejects.",
 			},
 			[]string{"code"}),
+		smtpdConnRateRejects: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "postfix",
+                Name:      "smtpd_connection_rate_failures_total",
+                Help:      "Total number of connection rate failures.",
+			},
+			[]string{"service"}),
 		smtpdSASLAuthenticationFailures: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "postfix",
 			Name:      "smtpd_sasl_authentication_failures_total",
@@ -737,6 +749,7 @@ func (e *PostfixExporter) Describe(ch chan<- *prometheus.Desc) {
 	e.smtpdLostConnections.Describe(ch)
 	e.smtpdProcesses.Describe(ch)
 	e.smtpdRejects.Describe(ch)
+	e.smtpdConnRateRejects.Describe(ch)
 	ch <- e.smtpdSASLAuthenticationFailures.Desc()
 	e.smtpdTLSConnects.Describe(ch)
 	ch <- e.smtpStatusDeferred.Desc()
@@ -833,6 +846,7 @@ func (e *PostfixExporter) Collect(ch chan<- prometheus.Metric) {
 	e.smtpdLostConnections.Collect(ch)
 	e.smtpdProcesses.Collect(ch)
 	e.smtpdRejects.Collect(ch)
+	e.smtpdConnRateRejects.Collect(ch)
 	ch <- e.smtpdSASLAuthenticationFailures
 	e.smtpdTLSConnects.Collect(ch)
 	ch <- e.smtpStatusDeferred
